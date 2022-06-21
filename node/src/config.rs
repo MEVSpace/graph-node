@@ -466,6 +466,7 @@ impl ChainSection {
                         url: url.to_string(),
                         features,
                         headers: Default::default(),
+                        rules: Vec::new(),
                     }),
                 };
                 let entry = chains.entry(name.to_string()).or_insert_with(|| Chain {
@@ -554,6 +555,28 @@ impl FirehoseProvider {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Web3Rule {
+    #[serde(with = "serde_regex")]
+    name: Regex,
+    limit: usize,
+}
+
+impl PartialEq for Web3Rule {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.to_string() == other.name.to_string() && self.limit == other.limit
+    }
+}
+
+impl Web3Rule {
+    fn limit_for(&self, node: &NodeId) -> Option<usize> {
+        match self.name.find(node.as_str()) {
+            Some(m) if m.as_str() == node.as_str() => Some(self.limit),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Web3Provider {
     #[serde(default)]
@@ -568,6 +591,9 @@ pub struct Web3Provider {
         deserialize_with = "deserialize_http_headers"
     )]
     pub headers: HeaderMap,
+
+    #[serde(default, rename = "match")]
+    rules: Vec<Web3Rule>,
 }
 
 impl Web3Provider {
@@ -576,6 +602,14 @@ impl Web3Provider {
             archive: self.features.contains("archive"),
             traces: self.features.contains("traces"),
         }
+    }
+
+    pub fn limit_for(&self, node: &NodeId) -> usize {
+        self.rules
+            .iter()
+            .filter_map(|l| l.limit_for(node))
+            .next()
+            .unwrap_or(usize::MAX)
     }
 }
 
@@ -673,6 +707,7 @@ impl<'de> Deserialize<'de> for Provider {
                 let mut transport = None;
                 let mut features = None;
                 let mut headers = None;
+                let mut nodes = Vec::new();
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -714,6 +749,9 @@ impl<'de> Deserialize<'de> for Provider {
                             let raw_headers: BTreeMap<String, String> = map.next_value()?;
                             headers = Some(btree_map_to_http_headers(raw_headers));
                         }
+                        ProviderField::Match => {
+                            nodes = map.next_value()?;
+                        }
                     }
                 }
 
@@ -736,6 +774,7 @@ impl<'de> Deserialize<'de> for Provider {
                         features: features
                             .ok_or_else(|| serde::de::Error::missing_field("features"))?,
                         headers: headers.unwrap_or_else(|| HeaderMap::new()),
+                        rules: nodes,
                     }),
                 };
 
@@ -760,6 +799,7 @@ impl<'de> Deserialize<'de> for Provider {
 enum ProviderField {
     Label,
     Details,
+    Match,
 
     // Deprecated fields
     Url,
@@ -996,6 +1036,10 @@ fn one() -> usize {
     1
 }
 
+fn default_node_id() -> NodeId {
+    NodeId::new("default").unwrap()
+}
+
 // From https://github.com/serde-rs/serde/issues/889#issuecomment-295988865
 fn string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
@@ -1035,6 +1079,7 @@ mod tests {
         Chain, Config, FirehoseProvider, Provider, ProviderDetails, Transport, Web3Provider,
     };
     use graph::blockchain::BlockchainKind;
+    use graph::prelude::NodeId;
     use http::{HeaderMap, HeaderValue};
     use std::collections::BTreeSet;
     use std::fs::read_to_string;
@@ -1117,6 +1162,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features: BTreeSet::new(),
                     headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1142,6 +1188,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features: BTreeSet::new(),
                     headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1206,6 +1253,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features,
                     headers,
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1230,6 +1278,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features: BTreeSet::new(),
                     headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1314,6 +1363,28 @@ mod tests {
                     .starts_with("supported firehose endpoint filters are:")
             )
         }
+    }
+
+    #[test]
+    fn it_parses_web3_provider_rules() {
+        fn limit_for(node: &str) -> usize {
+            let prov = toml::from_str::<Web3Provider>(
+                r#"
+            label = "something"
+            url = "http://example.com"
+            features = []
+            match = [ { name = "some_node_.*", limit = 10 },
+                      { name = "other_node_.*", limit = 0 } ]
+        "#,
+            )
+            .unwrap();
+
+            prov.limit_for(&NodeId::new(node.to_string()).unwrap())
+        }
+
+        assert_eq!(10, limit_for("some_node_0"));
+        assert_eq!(0, limit_for("other_node_0"));
+        assert_eq!(usize::MAX, limit_for("default"));
     }
 
     fn read_resource_as_string<P: AsRef<Path>>(path: P) -> String {
