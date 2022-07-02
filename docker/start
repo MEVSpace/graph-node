@@ -72,7 +72,7 @@ run_graph_node() {
         graph-node \
             --node-id "${node_id//-/_}" \
             --postgres-url "$postgres_url" \
-            --ethereum-ipc $ethereum \
+            --ethereum-rpc $ethereum \
             --ipfs "$ipfs"
     fi
 }
