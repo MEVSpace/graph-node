@@ -1865,6 +1865,12 @@ fn resolve_transaction_receipt(
             //
             // This could also be because the receipt is simply not available yet. For that case, we
             // should retry until it becomes available.
+            debug!(
+                logger, "no receipt returned";
+                "block_hash" =>
+                    block_hash.to_string(),
+                "tx_hash" => transaction_hash.to_string(),
+            );
             Err(IngestorError::ReceiptUnavailable(
                 block_hash,
                 transaction_hash,
